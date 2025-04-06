@@ -1,23 +1,11 @@
-# requirements.txt
-
-# Core application framework
 streamlit
-
-# Numerical computing
 numpy
-
-# Data manipulation and analysis
 pandas
-
-# Statistical functions (used for norm.cdf in Black-Scholes)
-scipy
-
-# Plotting library
 plotly
-
-# Yahoo Finance data fetching
+scipy
 yfinance
-
-# Note: It's generally recommended to pin versions for reproducible environments,
-# e.g., streamlit==1.25.0. You can generate a pinned list from your
-# working environment using: pip freeze > requirements.txt
+arch
+statsmodels
+pandas-datareader
+pickle-mixin 
+math 
