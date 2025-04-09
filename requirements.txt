@@ -7,5 +7,9 @@ yfinance
 arch
 statsmodels
 pandas-datareader
-pickle-mixin 
-math 
+pickle-mixin
+# Added for DoltHub access
+mysql-connector-python
+# Added for News API and Sentiment
+newsapi-python
+vaderSentiment
