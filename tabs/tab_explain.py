@@ -14,8 +14,7 @@ def render_tab_explain(
 
         st.subheader("Core Concepts")
         st.markdown(rf"""
-This tool analyzes option prices, incorporating potential impacts from tariffs and market jumps, alongside standard financial factors.
-
+# ... (Content unchanged) ...
 *   **Tariff Impact Model:** Primary effect modeled via risk-neutral *drift rate* adjustment. $r_{{drift}} = r + \lambda_{{sensitivity}} \times \tau$. ($r$: base rate, $\tau$: tariff rate, $\lambda_{{sensitivity}}$: user factor).
 *   **Volatility ($\sigma$):** Expected annualized std dev of log returns. Manual or GARCH(1,1) estimate (see below).
 *   **Risk-Free Rate (r):** From FRED (`{risk_free_rate_series}`) or manual.
@@ -30,7 +29,6 @@ This tool analyzes option prices, incorporating potential impacts from tariffs a
 2.  **d1/d2:** $ d_1 = \frac{\ln(S/K) + (r_{d} + \frac{1}{2}\sigma^2)T}{\sigma\sqrt{T}} $, $ d_2 = d_1 - \sigma\sqrt{T} $
 3.  **Prices:** Call $C = S N(d_1) - K e^{-rT} N(d_2)$, Put $P = K e^{-rT} N(-d_2) - S N(-d_1)$. Uses `black_scholes_merton_split_rates`.
 """)
-
         with st.expander("Merton Jump Diffusion with Tariff"):
             st.markdown(r"""Adds discrete jumps (Poisson process) to BSM diffusion.
 1.  **Process:** Changes due to diffusion ($\sigma$), tariff/jump-compensated drift, and random jumps (rate $\lambda_j$, size ~ log-normal($\mu_j, \sigma_j^2$)).
@@ -51,22 +49,18 @@ This tool analyzes option prices, incorporating potential impacts from tariffs a
         with st.expander("Implied Volatility (IV) and Greeks"):
             st.markdown(r"""
 *   **Implied Volatility (IV):** The $\sigma$ that makes **standard BSM price** = market price. Reflects market's vol expectation. Calculated numerically (Brent's method). *Volatility Smile/Skew* plots IV vs. Strike, showing non-constant market IV.
-*   **Greeks:** Sensitivities of the *theoretical* price (Mod. BSM or Merton) to input changes. Calculated via finite differences.
-    *   $\Delta$: Price change / $1 S change.
-    *   $\Gamma$: Delta change / $1 S change.
-    *   $\mathcal{V}$ (Vega): Price change / 1% vol change.
-    *   $\Theta$: Price change / 1 day decrease in T (time decay).
-    *   $\rho$: Price change / 1% rate change.
+*   **Greeks:** Sensitivities of the *theoretical* price (Mod. BSM or Merton) to input changes. Calculated via finite differences. ($\Delta$: vs S, $\Gamma$: vs $\Delta$, $\mathcal{V}$: vs $\sigma$, $\Theta$: vs time, $\rho$: vs r).
 """)
         with st.expander("Data Sources and Limitations"):
+            # FIX: Updated DoltHub description
             st.markdown(f"""
 *   **Live Stock/Options:** `yfinance` (Yahoo Finance). Delays/quality vary.
 *   **Historical Stock:** `yfinance` (adjusted).
-*   **Historical Options (Backtest):** DoltHub SQL API (`{dolthub_owner}/{dolthub_repo}`). **Public DB - quality/completeness NOT guaranteed.** Requires `DOLTHUB_API_KEY`. *Assumes 'options' table.*
+*   **Historical Options (Backtest):** DoltHub SQL API (`{dolthub_owner}/{dolthub_repo}`, table `option_chain`). **Public DB - quality/completeness NOT guaranteed.** Requires `DOLTHUB_API_KEY`. Schema includes `date`, `act_symbol`, `expiration`, `strike`, `call_put`, `bid`, `ask`, `vol` (used as IV), Greeks (`delta`, `gamma`, etc.). Lacks OHLC, trade volume, open interest. Market price for comparison uses mid-price calculated from bid/ask.
 *   **Risk-Free Rate:** FRED (`{risk_free_rate_series}`). Fetched via `pandas_datareader`.
 *   **News/Sentiment:** `NewsAPI` (key needed), `VADER`. API limits, source bias, sentiment limits apply.
 *   **Model Limits:** Standard assumptions. Tariff effect via drift is simplistic.
-*   **Backtest Accuracy:** Highly dependent on DoltHub data quality, historical vol handling, historical rates, constant parameter assumptions.
+*   **Backtest Accuracy:** Depends on DoltHub data quality/availability, hist. vol handling (DoltHub `vol` column priority), hist. rates, constant parameter assumptions.
 
 **Overall Disclaimer:** Educational tool ONLY. NOT financial advice. Consult qualified professionals.
 """)
