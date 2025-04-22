@@ -14,12 +14,12 @@ import math
 import re
 import requests
 import json
+import time
 from typing import Optional, Dict, Any, Tuple, List, Union, Callable
 from newsapi import NewsApiClient
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 # --- Constants ---
-# ... (Constants remain the same) ...
 DEFAULT_TICKER: str = "SPY"
 DEFAULT_S_FALLBACK: float = 100.0
 CACHE_TTL: int = 600
@@ -35,15 +35,14 @@ MERTON_SUM_N: int = 25
 RISK_FREE_RATE_SERIES: str = 'TB3MS'
 DEFAULT_R_FALLBACK: float = 0.05
 MIN_HIST_DATA_POINTS: int = 100
-DOLTHUB_API_KEY: Optional[str] = "dhat.v1.97u5r458m2e94rfc85o8m9o9ubjmivut4l6a2omuc6btgiddvgvg"
-DOLTHUB_OWNER: str = 'post-no-preference'
-DOLTHUB_REPO: str = 'options'
-DOLTHUB_BRANCH: str = 'master'
-DOLTHUB_API_BASE_URL: str = f"https://www.dolthub.com/api/v1alpha1/{DOLTHUB_OWNER}/{DOLTHUB_REPO}"
-DOLTHUB_TIMEOUT_SEC: int = 30
+
+# Polygon API Config
+POLYGON_API_KEY: Optional[str] = "op1ReRo2JXPVfoV1i6LAUudkBeyokKIn"
+POLYGON_BASE_URL: str = "https://api.polygon.io"
+POLYGON_TIMEOUT_SEC: int = 20
+POLYGON_MAX_LIMIT: int = 1000
 
 # --- Warning Filters ---
-# ... (Keep as is) ...
 warnings.filterwarnings("ignore", category=UserWarning, message=".*Non-stationary.*")
 warnings.filterwarnings("ignore", category=UserWarning, message=".*optimization failed to converge.*")
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -51,7 +50,7 @@ warnings.filterwarnings("ignore", message=".*'nopython' keyword.*")
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 # --- Mathematical Models ---
-# ... (Keep as is) ...
+# ... (Keep models as is) ...
 def black_scholes_merton(S: float, K: float, T: float, r: float, sigma: float, option_type: str = 'call', **kwargs) -> float:
     if T <= MIN_TIME_LEVEL or sigma < 0 or S <= MIN_PRICE_LEVEL or K <= MIN_PRICE_LEVEL: return np.nan
     if np.isclose(sigma, 0) or T < MIN_TIME_LEVEL: price = max(0, S - K * np.exp(-r * T)) if option_type == 'call' else max(0, K * np.exp(-r * T) - S); return price
@@ -178,10 +177,50 @@ def calculate_greeks(S: float, K: float, T: float, r: float, sigma: float, tau: 
     if pd.notna(pR_p) and pd.notna(pR_m) and not np.isclose(h_r, 0): rh = (pR_p - pR_m) / (2 * h_r) / 100.0
     return {'delta': d, 'gamma': g, 'vega': v, 'theta': t, 'rho': rh}
 
-# --- Data Fetching ---
+
+# --- Polygon API Helper Function ---
+def _polygon_api_request(endpoint: str, params: Optional[Dict] = None, expected_status: str = 'OK') -> Optional[Dict]:
+    if not POLYGON_API_KEY: print("Warning: Polygon API Key not configured."); return None
+    base_params = {'apiKey': POLYGON_API_KEY};
+    if params: base_params.update(params)
+    try:
+        response = requests.get(f"{POLYGON_BASE_URL}{endpoint}", params=base_params, timeout=POLYGON_TIMEOUT_SEC);
+        # print(f"DEBUG: Polygon Request URL: {response.url}") # Debug URL
+        response.raise_for_status(); data = response.json(); status = data.get('status')
+        if status != expected_status and status != 'DELAYED':
+            warning_message = f"Polygon API Error ({endpoint}): Status '{status}'. Message: {data.get('error', data.get('message', 'Unknown'))}"
+            try: st.warning(warning_message)
+            except Exception: print(f"Warning: {warning_message}")
+            return None
+        if status == 'DELAYED':
+             try: st.sidebar.warning("Polygon data is delayed.", icon="⏱️")
+             except Exception: pass
+        return data
+    except requests.exceptions.Timeout: print(f"Warning: Polygon API request timed out ({endpoint})."); return None
+    except requests.exceptions.RequestException as e: print(f"Warning: Polygon API request failed ({endpoint}): {e}"); return None
+    except json.JSONDecodeError: print(f"Warning: Polygon API Error: Failed to decode JSON response ({endpoint})."); return None
+    except Exception as e: print(f"Warning: Polygon API Unexpected Error ({endpoint}): {type(e).__name__} - {e}"); return None
+
+
+# --- Data Fetching Functions ---
+
+# --- yfinance Data Fetching ---
 @st.cache_data(ttl=CACHE_TTL)
 def get_stock_price(ticker_symbol: str) -> Optional[float]:
+    """Fetches current/previous close stock price (Try Polygon first, fallback yfinance)."""
     if not ticker_symbol: return None
+    # Try Polygon Previous Close endpoint first
+    endpoint = f"/v2/aggs/ticker/{ticker_symbol}/prev"
+    params = {'adjusted': 'true'}
+    data = _polygon_api_request(endpoint, params)
+    time.sleep(0.2) # Shorter delay for single price check
+
+    if data and data.get('status') == 'OK' and data.get('resultsCount', 0) > 0:
+        prev_close = data['results'][0].get('c')
+        if prev_close is not None: return float(prev_close)
+
+    # Fallback to yfinance if Polygon fails or returns no data
+    st.sidebar.info("Polygon previous close failed, trying yfinance for price...")
     try:
         ticker=yf.Ticker(ticker_symbol); info=ticker.fast_info; price=info.get('last_price') or info.get('market_price') or info.get('regularMarketPrice')
         if price is None: full_info=ticker.info; price=full_info.get('currentPrice') or full_info.get('regularMarketPrice') or full_info.get('bid') or full_info.get('ask') or full_info.get('previousClose')
@@ -189,8 +228,9 @@ def get_stock_price(ticker_symbol: str) -> Optional[float]:
         hist=ticker.history(period="5d",interval="1d")
         if not hist.empty and 'Close' in hist: last_close=hist['Close'].dropna().iloc[-1];
         if pd.notna(last_close) and isinstance(last_close,(int,float)) and last_close > MIN_PRICE_LEVEL: return float(last_close)
+        st.warning(f"Could not get price from yfinance for {ticker_symbol} either.")
         return None
-    except Exception: return None
+    except Exception as e: st.warning(f"yfinance price fetch error for {ticker_symbol}: {e}"); return None
 
 @st.cache_resource(ttl=CACHE_TTL)
 def get_yf_ticker_obj(_ticker_symbol: str) -> Optional[yf.Ticker]:
@@ -202,20 +242,11 @@ def get_yf_ticker_obj(_ticker_symbol: str) -> Optional[yf.Ticker]:
         return ticker
     except Exception as e: return None
 
-@st.cache_data(ttl=CACHE_TTL)
-def get_option_expiries(_ticker_symbol: str) -> List[str]:
-    if not _ticker_symbol: return []
-    try:
-        ticker = get_yf_ticker_obj(_ticker_symbol)
-        if ticker and hasattr(ticker, 'options') and ticker.options:
-            expiries = ticker.options
-            if isinstance(expiries, (list, tuple)): return list(expiries)
-            else: return []
-        else: return []
-    except Exception: return []
-
+# FIX: Added get_option_chain_data back for Live Analysis tab
 @st.cache_data(ttl=CACHE_TTL)
 def get_option_chain_data(_ticker_symbol: str, expiry_date: str) -> Optional[Dict[str, pd.DataFrame]]:
+    """Fetches and preprocesses option chain dict {'calls': df, 'puts': df} using yfinance."""
+    # (This is the yfinance implementation from before)
     if not _ticker_symbol or not expiry_date: return None
     try:
         ticker=get_yf_ticker_obj(_ticker_symbol);
@@ -241,7 +272,49 @@ def get_option_chain_data(_ticker_symbol: str, expiry_date: str) -> Optional[Dic
         return None
     except Exception: return None
 
+
+# --- Polygon Data Fetching ---
 @st.cache_data(ttl=3600)
+def get_polygon_options_expirations(underlying_ticker: str) -> List[str]:
+    if not underlying_ticker: return []
+    all_expirations = set(); endpoint = "/v3/reference/options/contracts"
+    params = {"underlying_ticker": underlying_ticker, "limit": POLYGON_MAX_LIMIT, "expired": "false", "order": "asc", "sort": "expiration_date"}
+    while True:
+        data = _polygon_api_request(endpoint, params); time.sleep(12.5) # Rate limit
+        if not data or 'results' not in data: break
+        results = data.get('results', []);
+        if not results: break
+        for contract in results:
+            if 'expiration_date' in contract: all_expirations.add(contract['expiration_date'])
+        next_url = data.get('next_url')
+        if next_url:
+            try: cursor = next_url.split('cursor=')[-1].split('&')[0]; params['cursor'] = cursor
+            except Exception as e: print(f"Cursor parse error: {e}"); break
+        else: break
+    today_str = date.today().strftime('%Y-%m-%d')
+    future_expiries = sorted([exp for exp in all_expirations if exp >= today_str])
+    return future_expiries
+
+@st.cache_data(ttl=CACHE_TTL)
+def get_polygon_options_strikes(underlying_ticker: str, expiration_date: str) -> List[float]:
+    if not underlying_ticker or not expiration_date: return []
+    all_strikes = set(); endpoint = "/v3/reference/options/contracts"
+    params = {"underlying_ticker": underlying_ticker, "expiration_date": expiration_date, "limit": POLYGON_MAX_LIMIT, "order":"asc", "sort":"strike_price"}
+    while True:
+        data = _polygon_api_request(endpoint, params); time.sleep(12.5) # Rate limit
+        if not data or 'results' not in data: break
+        results = data.get('results', []);
+        if not results: break
+        for contract in results:
+            if 'strike_price' in contract: all_strikes.add(contract['strike_price'])
+        next_url = data.get('next_url')
+        if next_url:
+            try: cursor = next_url.split('cursor=')[-1].split('&')[0]; params['cursor'] = cursor
+            except Exception as e: print(f"Cursor parse error: {e}"); break
+        else: break
+    return sorted(list(all_strikes))
+
+@st.cache_data(ttl=3600) # Cache historical stock data
 def get_historical_data(ticker_symbol: str, start_date: Union[str, date], end_date: Union[str, date]) -> Optional[pd.DataFrame]:
     if not ticker_symbol: return None
     try:
@@ -253,12 +326,32 @@ def get_historical_data(ticker_symbol: str, start_date: Union[str, date], end_da
         hist=hist.loc[start_dt.strftime('%Y-%m-%d'):end_dt.strftime('%Y-%m-%d')].copy().sort_index()
         if hist.empty: return None
         required_cols=['Open','High','Low','Close','Volume']; missing_cols=[col for col in required_cols if col not in hist.columns]
-        if missing_cols: return None
+        if missing_cols: print(f"Warning: Missing columns {missing_cols} from yfinance for {ticker_symbol}"); return None
         hist=hist[hist['Close']>MIN_PRICE_LEVEL]
         if hist.empty: return None
         return hist[required_cols]
-    except Exception: return None
+    except Exception as e: print(f"Error in get_historical_data for {ticker_symbol}: {e}"); return None
 
+@st.cache_data(ttl=CACHE_TTL) # Cache daily EOD data for session
+def get_polygon_option_eod(option_ticker: str, query_date: Union[str, date]) -> Optional[Dict]:
+    if not option_ticker: return None
+    date_str = pd.to_datetime(query_date).strftime('%Y-%m-%d')
+    endpoint = f"/v1/open-close/{option_ticker}/{date_str}"
+    params = {'adjusted': 'true'}
+    data = _polygon_api_request(endpoint, params)
+    # Rate limiting handled by caller (backtest loop)
+
+    if data and data.get('status') == 'OK':
+        return {'close': data.get('close'), 'volume': data.get('volume'), 'open': data.get('open'), 'high': data.get('high'), 'low': data.get('low'), 'bid': np.nan, 'ask': np.nan, 'mid': np.nan, 'implied_volatility': np.nan, 'delta': np.nan, 'gamma': np.nan, 'theta': np.nan, 'vega': np.nan, 'rho': np.nan, 'open_interest': np.nan}
+    return None # Return None if status not OK or data is None
+
+def generate_polygon_ticker(underlying: str, exp_date: Union[str, date], strike: float, opt_type: str) -> str:
+    exp_obj = pd.to_datetime(exp_date); exp_str = exp_obj.strftime('%y%m%d')
+    opt_char = 'C' if opt_type.lower() == 'call' else 'P'
+    strike_int = int(round(strike * 1000)); strike_str = f"{strike_int:08d}"
+    return f"O:{underlying.upper()}{exp_str}{opt_char}{strike_str}"
+
+# --- FRED Data Fetching ---
 @st.cache_data(ttl=86400)
 def get_fred_rate(series_id: str = RISK_FREE_RATE_SERIES, api_key: Optional[str] = None) -> float:
     if not series_id: return DEFAULT_R_FALLBACK
@@ -288,6 +381,7 @@ def get_historical_fred_rates(series_id: str = RISK_FREE_RATE_SERIES, start_date
         else: return None
     except Exception: return None
 
+# --- GARCH Function ---
 @st.cache_data(ttl=3600)
 def fit_garch_and_forecast(ticker_symbol: str, hist_start_date: date, hist_end_date: date, min_hist_points: int) -> Tuple[Optional[float], str]:
     if not ticker_symbol: return None, "No ticker symbol for GARCH."
@@ -325,88 +419,9 @@ def fit_garch_and_forecast(ticker_symbol: str, hist_start_date: date, hist_end_d
         return forecasted_vol, status
     except Exception as e: status=f"GARCH Model Error: {type(e).__name__}."; fallback_msg=f" Simple vol: {simple_vol:.4f}" if simple_vol is not None else " No fallback vol."; return simple_vol, status+fallback_msg
 
-# --- DoltHub API Functions ---
-@st.cache_data(ttl=CACHE_TTL)
-def fetch_historical_option_for_date(ticker: str, quote_date: Union[str, date], strike: float, expiry: Union[str, date], option_type: str) -> Optional[pd.Series]:
-    """Fetches historical option data from DoltHub API for a SINGLE date."""
-    if not DOLTHUB_API_KEY: st.warning("DoltHub API Key missing."); return None
-    if not ticker: st.warning("Ticker required."); return None
-
-    table_name = "option_chain"
-    select_cols_map = {"quote_date": "`date`", "expiration": "expiration", "strike": "strike", "type": "call_put", "implied_volatility": "vol", "delta": "delta", "gamma": "gamma", "theta": "theta", "vega": "vega", "rho": "rho", "bid": "bid", "ask": "ask"}
-    select_cols_str = ", ".join(select_cols_map.values())
-    ticker_col = "act_symbol"; type_col = "call_put"; date_col = "`date`"
-
-    where_clauses = [f"{ticker_col} = '{ticker.replace("'", "''")}'"]
-    try: where_clauses.append(f"{date_col} = '{pd.to_datetime(quote_date).strftime('%Y-%m-%d')}'")
-    except ValueError: st.warning(f"Invalid quote date '{quote_date}'."); return None
-    try: where_clauses.append(f"strike = {float(strike):.2f}")
-    except ValueError: st.warning(f"Invalid strike '{strike}'."); return None
-    try: where_clauses.append(f"expiration = '{pd.to_datetime(expiry).strftime('%Y-%m-%d')}'")
-    except ValueError: st.warning(f"Invalid expiry '{expiry}'."); return None
-    if option_type == 'call': where_clauses.append(f"{type_col} = 'C'")
-    elif option_type == 'put': where_clauses.append(f"{type_col} = 'P'")
-    else: st.warning(f"Invalid option type '{option_type}'."); return None
-
-    sql_query = f"SELECT {select_cols_str} FROM {table_name} WHERE {' AND '.join(where_clauses)} LIMIT 1"
-
-    api_url = f"{DOLTHUB_API_BASE_URL}/{DOLTHUB_BRANCH}"; headers = {'Authorization': DOLTHUB_API_KEY, 'Accept': 'application/json'}; params_api = {'q': sql_query}
-    # FIX: Initialize msg before try block
-    msg: Optional[str] = None
-    response = None
-    try:
-        response = requests.get(api_url, headers=headers, params=params_api, timeout=DOLTHUB_TIMEOUT_SEC); response.raise_for_status(); data = response.json()
-        if data.get('query_execution_status') != 'Success':
-            msg = data.get('query_execution_message', 'Unknown error.')
-            if "table not found" not in (msg or "").lower(): st.warning(f"DoltHub query failed: {msg}.")
-            return None
-        rows = data.get('rows');
-        if not rows: return None
-
-        row_data = rows[0]; processed_data = {}
-        rename_map = {v.strip('`'): k for k, v in select_cols_map.items()}
-        for api_col, data_val in row_data.items():
-            internal_col = rename_map.get(api_col, api_col)
-            processed_data[internal_col] = data_val
-
-        if 'quote_date' in processed_data: processed_data['quote_date'] = pd.to_datetime(processed_data['quote_date'], errors='coerce')
-        if 'expiration' in processed_data: processed_data['expiration'] = pd.to_datetime(processed_data['expiration'], errors='coerce')
-        num_cols = ['strike', 'implied_volatility', 'delta', 'gamma', 'theta', 'vega', 'rho', 'bid', 'ask']
-        for col in num_cols:
-            if col in processed_data: processed_data[col] = pd.to_numeric(processed_data.get(col), errors='coerce')
-        if 'type' in processed_data: processed_data['type'] = {'C': 'call', 'P': 'put'}.get(processed_data.get('type'))
-        bid = processed_data.get('bid'); ask = processed_data.get('ask'); mid = np.nan
-        if pd.notna(bid) and pd.notna(ask) and ask >= bid >= 0: mid = (bid + ask) / 2.0
-        processed_data['mid'] = mid if pd.notna(mid) else np.nan
-        iv = processed_data.get('implied_volatility')
-        if pd.notna(iv) and not (IV_LOW_BOUND <= iv <= MAX_VOL_LEVEL): processed_data['implied_volatility'] = np.nan
-        for col in ['open', 'high', 'low', 'close', 'volume', 'open_interest']:
-             if col not in processed_data: processed_data[col] = np.nan
-        return pd.Series(processed_data)
-    except requests.exceptions.RequestException as e: st.warning(f"DoltHub API Request Error: {e}"); return None
-    except json.JSONDecodeError: st.warning(f"DoltHub API Error: Failed JSON decode. Response: {response.text[:200] if response else 'No Response'}..."); return None
-    # FIX: Use formatted exception in the generic except block
-    except Exception as e: st.warning(f"DoltHub Data Processing Error: {type(e).__name__} - {e}"); return None
-
-
-@st.cache_data(ttl=CACHE_TTL)
-def fetch_recent_distinct_options_api(ticker: str, limit: int = 50) -> pd.DataFrame:
-    if not DOLTHUB_API_KEY or not ticker: return pd.DataFrame()
-    table_name = "option_chain"; ticker_col = "act_symbol"; expiry_col = "expiration"; strike_col = "strike"; type_col = "call_put"; date_col = "`date`"
-    sql_query = f"SELECT DISTINCT {expiry_col}, {strike_col}, {type_col} FROM {table_name} WHERE {ticker_col} = '{ticker.replace("'", "''")}' ORDER BY {date_col} DESC LIMIT {limit}"
-    api_url = f"{DOLTHUB_API_BASE_URL}/{DOLTHUB_BRANCH}"; headers = {'Authorization': DOLTHUB_API_KEY, 'Accept': 'application/json'}; params_api = {'q': sql_query}; df = pd.DataFrame()
-    try:
-        response = requests.get(api_url, headers=headers, params=params_api, timeout=DOLTHUB_TIMEOUT_SEC); response.raise_for_status(); data = response.json()
-        if data.get('query_execution_status') != 'Success': return df
-        rows = data.get('rows');
-        if not rows: return df
-        df = pd.DataFrame(rows); df.rename(columns={expiry_col: 'expiration', strike_col: 'strike', type_col: 'type'}, inplace=True)
-        df['expiration'] = pd.to_datetime(df['expiration'], errors='coerce'); df['strike'] = pd.to_numeric(df['strike'], errors='coerce')
-        df['type'] = df['type'].map({'C': 'CALL', 'P': 'PUT'}).fillna(df['type']); df = df.dropna()
-        df = df.sort_values(by=['expiration', 'strike', 'type']).reset_index(drop=True); return df
-    except Exception: return df
 
 # --- News Fetching & Sentiment ---
+# ... (Keep clean_text and fetch_news_and_sentiment as they were, with underscores) ...
 def clean_text(text: Any) -> str:
     if not isinstance(text, str): return ""
     text=str(text); text=re.sub(r'http\S+|www\.\S+',' ',text); text=re.sub(r'<.*?>',' ',text); text=re.sub(r'\[.*?\]',' ',text); text=re.sub(r'[\n\r\t]',' ',text); text=re.sub(r'[^A-Za-z0-9\s.,!?$%]','',text); text=re.sub(r'\s+',' ',text).strip(); return text.lower()
@@ -443,6 +458,7 @@ def fetch_news_and_sentiment(_newsapi_client: Optional[NewsApiClient], _analyzer
     except Exception as e: status_msg=f"News Fetch/Sentiment Error: {type(e).__name__} - {e}"; st.error(status_msg); return pd.DataFrame(), status_msg
 
 # --- Greeks Visualization ---
+# ... (Keep as is) ...
 def create_gauge_chart(value: Optional[float], title: str, range_min: float, range_max: float, greek_symbol: str = "") -> go.Figure:
     fig = go.Figure(); display_value=value if pd.notna(value)else 0; value_text=f"{value:.4f}" if pd.notna(value)else"N/A"
     fig.add_trace(go.Indicator(mode="gauge+number",value=display_value,number={'valueformat':'.4f','suffix':''},title={'text':f"<span style='font-size:0.9em;'>{greek_symbol} {title}</span><br><span style='font-size:0.7em;'>{value_text}</span>",'font':{'size':14}},gauge={'axis':{'range':[range_min,range_max],'tickwidth':1,'tickcolor':"darkblue"},'bar':{'color':"#1f77b4",'thickness':0.3},'bgcolor':"white",'borderwidth':1,'bordercolor':"#cccccc",'steps':[{'range':[min(0,range_min),max(0,range_max)],'color':'lightgray'}],'threshold':{'line':{'color':"red",'width':3},'thickness':0.75,'value':display_value}}))
