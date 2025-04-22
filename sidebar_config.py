@@ -18,8 +18,8 @@ from utils import (
 
 def render_sidebar(
     newsapi_client: Optional[Any],
-    sentiment_analyzer: Any,
-    # fred_api_key parameter removed
+    sentiment_analyzer: Any, # Keep original name here
+    # fred_api_key removed
     news_api_enabled: bool
     ) -> Tuple[str, str, Callable, float, float, float, float, Dict[str, float], bool]:
     """Renders the sidebar configuration and returns selected parameters."""
@@ -51,7 +51,6 @@ def render_sidebar(
         r = st.session_state.current_r
         if r_src.startswith("FRED"):
             with st.spinner(f"Fetching {RISK_FREE_RATE_SERIES} from FRED..."):
-                # Removed api_key argument
                 fetched_r = get_fred_rate(series_id=RISK_FREE_RATE_SERIES)
                 if isinstance(fetched_r, float):
                     r = fetched_r; st.session_state.current_r = r
@@ -107,10 +106,10 @@ def render_sidebar(
                 if not news_kws: st.warning("Enter valid keywords.")
                 else:
                     with st.spinner(f"Fetching news for: {', '.join(news_kws)}..."):
-                        # FIX: Pass newsapi_client with leading underscore for caching
+                        # FIX: Pass analyzer with leading underscore for caching
                         news_df_res, news_stat_res = fetch_news_and_sentiment(
-                            _newsapi_client=newsapi_client, # Use underscore here
-                            analyzer=sentiment_analyzer,
+                            _newsapi_client=newsapi_client,
+                            _analyzer=sentiment_analyzer, # Use underscore here
                             keywords=news_kws,
                             page_size=news_num
                         )

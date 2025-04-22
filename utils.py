@@ -19,6 +19,7 @@ from newsapi import NewsApiClient
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 # --- Constants ---
+# ... (Constants remain the same) ...
 DEFAULT_TICKER: str = "SPY"
 DEFAULT_S_FALLBACK: float = 100.0
 CACHE_TTL: int = 600
@@ -34,15 +35,12 @@ MERTON_SUM_N: int = 25
 RISK_FREE_RATE_SERIES: str = 'TB3MS'
 DEFAULT_R_FALLBACK: float = 0.05
 MIN_HIST_DATA_POINTS: int = 100
-
-# DoltHub API Config
 DOLTHUB_API_KEY: Optional[str] = "dhat.v1.97u5r458m2e94rfc85o8m9o9ubjmivut4l6a2omuc6btgiddvgvg"
 DOLTHUB_OWNER: str = 'post-no-preference'
 DOLTHUB_REPO: str = 'options'
 DOLTHUB_BRANCH: str = 'master'
 DOLTHUB_API_BASE_URL: str = f"https://www.dolthub.com/api/v1alpha1/{DOLTHUB_OWNER}/{DOLTHUB_REPO}"
-# FIX: Increased timeout further
-DOLTHUB_TIMEOUT_SEC: int = 45 # Increased timeout to 45 seconds
+DOLTHUB_TIMEOUT_SEC: int = 30
 
 # --- Warning Filters ---
 # ... (Keep as is) ...
@@ -51,7 +49,6 @@ warnings.filterwarnings("ignore", category=UserWarning, message=".*optimization 
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", message=".*'nopython' keyword.*")
 warnings.filterwarnings("ignore", category=RuntimeWarning)
-
 
 # --- Mathematical Models ---
 # ... (Keep as is) ...
@@ -182,7 +179,6 @@ def calculate_greeks(S: float, K: float, T: float, r: float, sigma: float, tau: 
     return {'delta': d, 'gamma': g, 'vega': v, 'theta': t, 'rho': rh}
 
 # --- Data Fetching ---
-# ... (Keep yfinance and FRED fetching functions as they were) ...
 @st.cache_data(ttl=CACHE_TTL)
 def get_stock_price(ticker_symbol: str) -> Optional[float]:
     if not ticker_symbol: return None
@@ -271,9 +267,8 @@ def get_fred_rate(series_id: str = RISK_FREE_RATE_SERIES, api_key: Optional[str]
         fred = pdr.DataReader(series_id,'fred',start_date,end_date,api_key=api_key)
         if not fred.empty:
             last_valid_rate=fred[series_id].dropna().iloc[-1]
-            if pd.notna(last_valid_rate):
-                return float(last_valid_rate)/100.0
-    except Exception: pass # Silently pass on error, return default below
+            if pd.notna(last_valid_rate): return float(last_valid_rate)/100.0
+    except Exception: pass
     return DEFAULT_R_FALLBACK
 
 @st.cache_data(ttl=86400)
@@ -291,7 +286,7 @@ def get_historical_fred_rates(series_id: str = RISK_FREE_RATE_SERIES, start_date
             if rates_daily.isnull().all(): return None
             return rates_daily
         else: return None
-    except Exception: return None # Return None on exception
+    except Exception: return None
 
 @st.cache_data(ttl=3600)
 def fit_garch_and_forecast(ticker_symbol: str, hist_start_date: date, hist_end_date: date, min_hist_points: int) -> Tuple[Optional[float], str]:
@@ -331,59 +326,68 @@ def fit_garch_and_forecast(ticker_symbol: str, hist_start_date: date, hist_end_d
     except Exception as e: status=f"GARCH Model Error: {type(e).__name__}."; fallback_msg=f" Simple vol: {simple_vol:.4f}" if simple_vol is not None else " No fallback vol."; return simple_vol, status+fallback_msg
 
 # --- DoltHub API Functions ---
-# ... (Keep DoltHub functions as they were in the previous good version) ...
 @st.cache_data(ttl=CACHE_TTL)
-def fetch_historical_options_via_api(ticker: str, start_date: Union[str, date], end_date: Union[str, date], strike: Optional[float]=None, expiry: Optional[Union[str, date]]=None, option_type: Optional[str]=None) -> pd.DataFrame:
-    if not DOLTHUB_API_KEY: st.warning("DoltHub API Key missing."); return pd.DataFrame()
-    if not ticker: st.warning("Ticker required."); return pd.DataFrame()
-    table_name = "option_chain"; select_cols_map = {"quote_date": "`date`", "expiration": "expiration", "strike": "strike", "type": "call_put", "implied_volatility": "vol", "delta": "delta", "gamma": "gamma", "theta": "theta", "vega": "vega", "rho": "rho", "bid": "bid", "ask": "ask"}
-    select_cols_str = ", ".join(select_cols_map.values()); ticker_col = "act_symbol"; type_col = "call_put"; date_col = "`date`"
+def fetch_historical_option_for_date(ticker: str, quote_date: Union[str, date], strike: float, expiry: Union[str, date], option_type: str) -> Optional[pd.Series]:
+    """Fetches historical option data from DoltHub API for a SINGLE date."""
+    if not DOLTHUB_API_KEY: st.warning("DoltHub API Key missing."); return None
+    if not ticker: st.warning("Ticker required."); return None
+
+    table_name = "option_chain"
+    select_cols_map = {"quote_date": "`date`", "expiration": "expiration", "strike": "strike", "type": "call_put", "implied_volatility": "vol", "delta": "delta", "gamma": "gamma", "theta": "theta", "vega": "vega", "rho": "rho", "bid": "bid", "ask": "ask"}
+    select_cols_str = ", ".join(select_cols_map.values())
+    ticker_col = "act_symbol"; type_col = "call_put"; date_col = "`date`"
+
     where_clauses = [f"{ticker_col} = '{ticker.replace("'", "''")}'"]
-    try: start_s = pd.to_datetime(start_date).strftime('%Y-%m-%d'); end_s = pd.to_datetime(end_date).strftime('%Y-%m-%d'); where_clauses.append(f"{date_col} BETWEEN '{start_s}' AND '{end_s}'")
-    except ValueError: st.warning("Invalid date range."); return pd.DataFrame()
-    if strike is not None:
-        try: where_clauses.append(f"strike = {float(strike):.2f}")
-        except ValueError: st.warning(f"Invalid strike '{strike}'."); return pd.DataFrame()
-    if expiry is not None:
-        try: where_clauses.append(f"expiration = '{pd.to_datetime(expiry).strftime('%Y-%m-%d')}'")
-        except ValueError: st.warning(f"Invalid expiry '{expiry}'."); return pd.DataFrame()
+    try: where_clauses.append(f"{date_col} = '{pd.to_datetime(quote_date).strftime('%Y-%m-%d')}'")
+    except ValueError: st.warning(f"Invalid quote date '{quote_date}'."); return None
+    try: where_clauses.append(f"strike = {float(strike):.2f}")
+    except ValueError: st.warning(f"Invalid strike '{strike}'."); return None
+    try: where_clauses.append(f"expiration = '{pd.to_datetime(expiry).strftime('%Y-%m-%d')}'")
+    except ValueError: st.warning(f"Invalid expiry '{expiry}'."); return None
     if option_type == 'call': where_clauses.append(f"{type_col} = 'C'")
     elif option_type == 'put': where_clauses.append(f"{type_col} = 'P'")
-    sql_query = f"SELECT {select_cols_str} FROM {table_name} WHERE {' AND '.join(where_clauses)} ORDER BY {date_col} ASC"
-    api_url = f"{DOLTHUB_API_BASE_URL}/{DOLTHUB_BRANCH}"; headers = {'Authorization': DOLTHUB_API_KEY, 'Accept': 'application/json'}; params_api = {'q': sql_query}; df = pd.DataFrame()
+    else: st.warning(f"Invalid option type '{option_type}'."); return None
+
+    sql_query = f"SELECT {select_cols_str} FROM {table_name} WHERE {' AND '.join(where_clauses)} LIMIT 1"
+
+    api_url = f"{DOLTHUB_API_BASE_URL}/{DOLTHUB_BRANCH}"; headers = {'Authorization': DOLTHUB_API_KEY, 'Accept': 'application/json'}; params_api = {'q': sql_query}
+    # FIX: Initialize msg before try block
+    msg: Optional[str] = None
+    response = None
     try:
         response = requests.get(api_url, headers=headers, params=params_api, timeout=DOLTHUB_TIMEOUT_SEC); response.raise_for_status(); data = response.json()
-        if data.get('query_execution_status') != 'Success': msg = data.get('query_execution_message', 'Unknown error.');
-        if "table not found" in msg.lower(): st.error(f"DoltHub Error: Table '{table_name}' not found.")
-        else: st.warning(f"DoltHub API query failed: {msg}. Query: {sql_query[:500]}...")
-        return df
+        if data.get('query_execution_status') != 'Success':
+            msg = data.get('query_execution_message', 'Unknown error.')
+            if "table not found" not in (msg or "").lower(): st.warning(f"DoltHub query failed: {msg}.")
+            return None
         rows = data.get('rows');
-        if not rows: return df
-        df = pd.DataFrame(rows);
-        if df.empty: return df
-        rename_map = {v.strip('`'): k for k, v in select_cols_map.items()}; df.rename(columns=rename_map, inplace=True)
-        if 'quote_date' in df.columns: df['quote_date'] = pd.to_datetime(df['quote_date'], errors='coerce')
-        if 'expiration' in df.columns: df['expiration'] = pd.to_datetime(df['expiration'], errors='coerce')
-        df = df.dropna(subset=['quote_date', 'expiration'])
+        if not rows: return None
+
+        row_data = rows[0]; processed_data = {}
+        rename_map = {v.strip('`'): k for k, v in select_cols_map.items()}
+        for api_col, data_val in row_data.items():
+            internal_col = rename_map.get(api_col, api_col)
+            processed_data[internal_col] = data_val
+
+        if 'quote_date' in processed_data: processed_data['quote_date'] = pd.to_datetime(processed_data['quote_date'], errors='coerce')
+        if 'expiration' in processed_data: processed_data['expiration'] = pd.to_datetime(processed_data['expiration'], errors='coerce')
         num_cols = ['strike', 'implied_volatility', 'delta', 'gamma', 'theta', 'vega', 'rho', 'bid', 'ask']
         for col in num_cols:
-            if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
-        df = df.dropna(subset=['strike'])
-        if 'type' in df.columns: df['type'] = df['type'].map({'C': 'call', 'P': 'put'}).fillna(df['type'])
-        df['mid'] = np.nan
-        if 'bid' in df.columns and 'ask' in df.columns:
-             valid = (df['bid'].notna() & df['ask'].notna() & (df['ask'] >= df['bid']) & (df['bid'] >= 0))
-             df.loc[valid, 'mid'] = (df.loc[valid, 'bid'] + df.loc[valid, 'ask']) / 2.0
-             df['mid'] = df['mid'].apply(lambda x: x if pd.notna(x) and x >= 0 else np.nan)
-        df = df.set_index('quote_date').sort_index()
-        df['TTM'] = (df['expiration'] - df.index).dt.days / 365.25; df['TTM'] = df['TTM'].apply(lambda x: max(x, 0.0)); df['TTM'] = df['TTM'].apply(lambda x: max(x, MIN_TIME_LEVEL) if x > 0 else 0.0)
-        if 'implied_volatility' in df.columns: df['implied_volatility'] = df['implied_volatility'].apply(lambda x: x if pd.notna(x) and IV_LOW_BOUND <= x <= MAX_VOL_LEVEL else np.nan)
+            if col in processed_data: processed_data[col] = pd.to_numeric(processed_data.get(col), errors='coerce')
+        if 'type' in processed_data: processed_data['type'] = {'C': 'call', 'P': 'put'}.get(processed_data.get('type'))
+        bid = processed_data.get('bid'); ask = processed_data.get('ask'); mid = np.nan
+        if pd.notna(bid) and pd.notna(ask) and ask >= bid >= 0: mid = (bid + ask) / 2.0
+        processed_data['mid'] = mid if pd.notna(mid) else np.nan
+        iv = processed_data.get('implied_volatility')
+        if pd.notna(iv) and not (IV_LOW_BOUND <= iv <= MAX_VOL_LEVEL): processed_data['implied_volatility'] = np.nan
         for col in ['open', 'high', 'low', 'close', 'volume', 'open_interest']:
-             if col not in df.columns: df[col] = np.nan
-        return df
-    except requests.exceptions.RequestException as e: st.warning(f"DoltHub API Request Error: {e}"); return df
-    except json.JSONDecodeError: st.warning(f"DoltHub API Error: Failed JSON decode. Response: {response.text[:200]}..."); return df
-    except Exception as e: st.warning(f"DoltHub Data Processing Error: {type(e).__name__} - {e}"); return df
+             if col not in processed_data: processed_data[col] = np.nan
+        return pd.Series(processed_data)
+    except requests.exceptions.RequestException as e: st.warning(f"DoltHub API Request Error: {e}"); return None
+    except json.JSONDecodeError: st.warning(f"DoltHub API Error: Failed JSON decode. Response: {response.text[:200] if response else 'No Response'}..."); return None
+    # FIX: Use formatted exception in the generic except block
+    except Exception as e: st.warning(f"DoltHub Data Processing Error: {type(e).__name__} - {e}"); return None
+
 
 @st.cache_data(ttl=CACHE_TTL)
 def fetch_recent_distinct_options_api(ticker: str, limit: int = 50) -> pd.DataFrame:
@@ -408,7 +412,7 @@ def clean_text(text: Any) -> str:
     text=str(text); text=re.sub(r'http\S+|www\.\S+',' ',text); text=re.sub(r'<.*?>',' ',text); text=re.sub(r'\[.*?\]',' ',text); text=re.sub(r'[\n\r\t]',' ',text); text=re.sub(r'[^A-Za-z0-9\s.,!?$%]','',text); text=re.sub(r'\s+',' ',text).strip(); return text.lower()
 
 @st.cache_data(ttl=1800)
-def fetch_news_and_sentiment(_newsapi_client: Optional[NewsApiClient], analyzer: SentimentIntensityAnalyzer, keywords: List[str], lang: str = 'en', page_size: int = 20) -> Tuple[pd.DataFrame, str]:
+def fetch_news_and_sentiment(_newsapi_client: Optional[NewsApiClient], _analyzer: SentimentIntensityAnalyzer, keywords: List[str], lang: str = 'en', page_size: int = 20) -> Tuple[pd.DataFrame, str]:
     if not _newsapi_client: return pd.DataFrame(), "NewsAPI Client not initialized."
     if not keywords: return pd.DataFrame(), "No keywords provided."
     q_parts=[f'"{k}"' if' 'in k else k for k in keywords if k and isinstance(k,str)and re.match(r'^[A-Za-z0-9\s"-]+$',k)]; query=" OR ".join(q_parts)
@@ -427,7 +431,7 @@ def fetch_news_and_sentiment(_newsapi_client: Optional[NewsApiClient], analyzer:
                 seen_urls.add(url); title=article.get('title','')or"[No Title]"; desc=article.get('description','')or""; content=article.get('content','')or""
                 text=f"{title}. {desc} {content}".strip(); cleaned=clean_text(text)
                 if not cleaned or len(cleaned)<25: continue
-                scores=analyzer.polarity_scores(cleaned); sentiment=scores['compound']
+                scores=_analyzer.polarity_scores(cleaned); sentiment=scores['compound']
                 pub_str=article.get('publishedAt'); pub_fmt="[No Date]"
                 try: pub_dt=pd.to_datetime(pub_str).tz_convert(None); pub_fmt=pub_dt.strftime('%Y-%m-%d %H:%M')
                 except Exception: pass
