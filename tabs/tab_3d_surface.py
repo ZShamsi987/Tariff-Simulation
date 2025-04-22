@@ -3,7 +3,6 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-# FIX: Import Any
 from typing import Optional, Dict, Any, Callable
 
 # Import necessary functions from utils
@@ -14,7 +13,7 @@ from utils import (
 )
 
 def render_tab_3d_surface(
-    st_tab: Any, # FIX: Keep type hint
+    st_tab: Any, 
     pricing_model_name: str,
     pricing_model_func: Callable,
     current_S: Optional[float],
@@ -29,7 +28,6 @@ def render_tab_3d_surface(
         st.header(f"3D Option Price Surface ({pricing_model_name})")
         st.markdown("Visualize the theoretical option price across a range of Strike Prices (K) and Times to Maturity (T).")
 
-        # ... (Rest of the function remains exactly the same as previous version) ...
         base_S_3d = current_S; base_r_3d = r; base_sigma_3d = sigma_base
         base_tau_3d = tau; base_model_args_3d = model_args_common
         base_S_is_valid = isinstance(base_S_3d, (int, float)) and base_S_3d > MIN_PRICE_LEVEL

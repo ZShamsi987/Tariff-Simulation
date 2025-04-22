@@ -3,7 +3,7 @@ import streamlit as st
 from typing import Any
 
 # Import constants to display in text
-from utils import RISK_FREE_RATE_SERIES # Use Polygon constants if needed
+from utils import RISK_FREE_RATE_SERIES, POLYGON_BASE_URL # Use Polygon constants if needed
 
 def render_tab_explain(
     st_tab: Any,
@@ -32,15 +32,15 @@ def render_tab_explain(
 *   **Implied Volatility (IV):** The $\sigma$ that makes **standard BSM price** = market price (from *live* `yfinance` data). Reflects market's vol expectation. Calculated numerically (Brent's method). *Volatility Smile/Skew* tab plots IV vs. Strike.
 *   **Greeks:** Sensitivities of the *theoretical* price (Mod. BSM or Merton) to input changes. Calculated via finite differences. ($\Delta$: vs S, $\Gamma$: vs $\Delta$, $\mathcal{V}$: vs $\sigma$, $\Theta$: vs time, $\rho$: vs r).
 """)
-        # FIX: Update backtest data source description
+        # FIX: Updated backtest data source description
         with st.expander("Data Sources and Limitations"):
             st.markdown(f"""
 *   **Live Stock Price:** Polygon Previous Close (`/v2/aggs/ticker/{{ticker}}/prev`) with fallback to `yfinance`.
 *   **Live Options Data (Expirations):** Polygon.io API (`/v3/reference/options/contracts`). Used to populate expiry dropdown.
 *   **Live Options Data (Chain Details):** `yfinance` (Yahoo Finance). Provides live bid, ask, volume, OI, source IV for the selected expiry. Used in Live Analysis and Vol Smile tabs. Delays/quality vary.
 *   **Historical Stock:** `yfinance` (adjusted).
-*   **Historical Options (Backtest):** Polygon.io API (`/v1/open-close/{{optionsTicker}}/{{date}}`). Provides **End-of-Day OHLCV** data. Fetched day-by-day. **Requires Polygon API Key.**
-    *   **Limitations:** This EOD endpoint **does not provide historical bid, ask, IV, or Greeks.** The backtest compares model prices against the Polygon EOD `close` price. Historical volatility for model pricing relies *solely* on the "Volatility Fallback σ" set in the sidebar (Manual or GARCH). Data availability for specific options on specific past dates is not guaranteed. Rate limits (5 calls/min) are handled with delays, making long backtests slow.
+*   **Historical Options (Backtest):** Polygon.io API (`/v1/open-close/{{optionsTicker}}/{{date}}`). Provides **End-of-Day OHLCV** data. Fetched day-by-day.
+    *   **Limitations:** This EOD endpoint **lacks historical bid, ask, IV, or Greeks.** The backtest compares model prices against the Polygon EOD `close` price. Historical volatility for model pricing relies **solely** on the "Volatility σ" set in the sidebar (Manual or GARCH). Data availability for specific options on specific past dates is not guaranteed. Rate limits (5 calls/min) are handled with delays, making long backtests slow (~15-25s per day).
 *   **Risk-Free Rate:** FRED (`{risk_free_rate_series}`). Fetched via `pandas_datareader`.
 *   **News/Sentiment:** `NewsAPI` (key needed), `VADER`. API limits, source bias, sentiment limits apply.
 *   **Model Limits:** Standard assumptions. Tariff effect via drift is simplistic.

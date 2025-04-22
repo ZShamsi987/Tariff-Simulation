@@ -18,8 +18,7 @@ from utils import (
 
 def render_sidebar(
     newsapi_client: Optional[Any],
-    sentiment_analyzer: Any, # Keep original name here
-    # fred_api_key removed
+    sentiment_analyzer: Any,
     news_api_enabled: bool
     ) -> Tuple[str, str, Callable, float, float, float, float, Dict[str, float], bool]:
     """Renders the sidebar configuration and returns selected parameters."""
@@ -101,15 +100,15 @@ def render_sidebar(
         news_kw_in = st.text_input("Keywords (comma-separated)", default_kw, key="sb_news_kw", help="Keywords for news search.")
         news_kws = [k.strip() for k in news_kw_in.split(',') if k.strip()]
         news_num = st.slider("Max Articles", 5, 50, 15, key="sb_news_num", help="Max articles to fetch.")
+        # FIX: Only show button if enabled, remove caption if disabled
         if news_api_enabled:
             if st.button("Fetch News & Sentiment", key="sb_fetch_news"):
                 if not news_kws: st.warning("Enter valid keywords.")
                 else:
                     with st.spinner(f"Fetching news for: {', '.join(news_kws)}..."):
-                        # FIX: Pass analyzer with leading underscore for caching
                         news_df_res, news_stat_res = fetch_news_and_sentiment(
                             _newsapi_client=newsapi_client,
-                            _analyzer=sentiment_analyzer, # Use underscore here
+                            _analyzer=sentiment_analyzer,
                             keywords=news_kws,
                             page_size=news_num
                         )
@@ -117,9 +116,10 @@ def render_sidebar(
                     st.session_state.news_status = news_stat_res
                     st.session_state.news_keywords_processed = news_kw_in
                     st.info(f"News Status: {news_stat_res}")
-        else: st.caption("News fetching disabled (check API key).")
+        # else: st.caption("News fetching disabled (check API key).") # Removed
 
     # --- Display Average Sentiment ---
+    # FIX: Only display if enabled and data exists
     if news_api_enabled:
          news_df_state = st.session_state.get('news_df', pd.DataFrame())
          if not news_df_state.empty and 'Sent' in news_df_state.columns:
@@ -127,7 +127,7 @@ def render_sidebar(
             num_articles = len(news_df_state)
             keywords_used = st.session_state.get('news_keywords_processed', 'N/A')
             st.sidebar.metric("Average News Sentiment", f"{avg_sent:.3f}", help=f"Avg VADER score based on {num_articles} articles for '{keywords_used}'.")
-         else: st.sidebar.caption(st.session_state.get('news_status', 'News not fetched.'))
+         # Removed the 'else' block that showed status when no data, less clutter
 
     # --- Return all configured parameters ---
     return ticker_symbol, pricing_model_name, pricing_model_func, tau, lambda_sens, r, sigma_base, jump_params, req_jumps

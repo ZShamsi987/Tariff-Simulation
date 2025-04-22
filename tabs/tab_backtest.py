@@ -4,26 +4,24 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import date, timedelta, datetime
-import time # Import time for rate limiting
+import time
 from typing import Optional, Dict, Any, Callable
 
 # Import necessary functions from utils
 from utils import (
     get_polygon_option_eod,
     generate_polygon_ticker,
-    # FIX: Remove DoltHub imports
-    # fetch_recent_distinct_options_api,
     get_historical_data,
     get_historical_fred_rates,
     MIN_PRICE_LEVEL,
     MIN_TIME_LEVEL,
     MIN_VOL_LEVEL,
     RISK_FREE_RATE_SERIES,
-    POLYGON_API_KEY, # Check API key directly
+    POLYGON_API_KEY, # Check if key exists
     DEFAULT_S_FALLBACK
 )
 
-# FIX: Remove DoltHub callback
+# REMOVED DoltHub callback
 # def update_backtest_selections(): ...
 
 def render_tab_backtest(
@@ -33,7 +31,7 @@ def render_tab_backtest(
     pricing_model_func: Callable,
     current_S: Optional[float],
     r: float,
-    sigma_base: float, # Fallback sigma is now primary for historical
+    sigma_base: float,
     tau: float,
     lambda_sens: float,
     model_args_common: Dict[str, Any],
@@ -43,8 +41,8 @@ def render_tab_backtest(
     with st_tab:
         st.header(f"Historical Backtest vs Market ({pricing_model_name})")
         st.markdown(f"Compare historical model prices against Polygon.io **End-of-Day (EOD)** market data (`close` price).")
-        st.caption("Methodology notes in 'Explain' tab. Fetches EOD data day-by-day (respects 5 calls/min limit). Requires Polygon API key.")
-        st.warning("Note: Polygon EOD data typically **lacks historical IV, Bid, Ask, and Greeks**. Backtest uses the **Sidebar Volatility σ** for model calculations.", icon="⚠️")
+        # FIX: Adjusted caption
+        st.caption("Methodology notes in 'Explain' tab. Fetches EOD data day-by-day. Longer ranges increase runtime (~15-25s per day queried due to API limits).")
 
         polygon_ready = bool(POLYGON_API_KEY)
         if not polygon_ready:
@@ -54,45 +52,30 @@ def render_tab_backtest(
         col5a, col5b = st.columns([1, 2])
         with col5a:
             st.subheader("Backtest Configuration")
-
-            # --- REMOVED DoltHub recent options selector ---
+            # Removed DoltHub helper section
 
             st.markdown("**Backtest Parameters**")
             default_end_date_bt = date.today() - timedelta(days=1)
             default_start_date_bt = default_end_date_bt - timedelta(days=60)
             hist_start_date = st.date_input("Backtest Start Date", default_start_date_bt, max_value=default_end_date_bt, key="bt_start_poly")
             hist_end_date = st.date_input("Backtest End Date", default_end_date_bt, min_value=hist_start_date, max_value=default_end_date_bt, key="bt_end_poly")
-            st.caption("Note: Backtest fetches option data day-by-day. Longer ranges will take more time due to API rate limits.")
 
-            # --- Use Live Analysis K/Expiry as defaults if available ---
-            # Get values from session state if they exist
-            k_default_from_live = st.session_state.get('selected_K', None)
-            expiry_default_from_live = st.session_state.get('selected_expiry_str', None)
+            # Default K and Expiry logic remains the same
+            hist_K_default = st.session_state.get('selected_K')
+            if hist_K_default is None: hist_K_default = current_S if isinstance(current_S,(int,float)) and current_S>0 else DEFAULT_S_FALLBACK
+            else: hist_K_default = float(hist_K_default) # Ensure float if from state
 
-            # Set default K for the input widget
-            hist_K_default_val = None
-            if k_default_from_live is not None:
-                hist_K_default_val = float(k_default_from_live)
-            elif isinstance(current_S,(int,float)) and current_S > 0:
-                step = 1.0 if current_S < 50 else (5.0 if current_S < 500 else 10.0)
-                hist_K_default_val = round(current_S / step) * step
-            else:
-                hist_K_default_val = DEFAULT_S_FALLBACK
-            # Use a unique key for the number input
-            hist_K = st.number_input("Option Strike (K)", value=hist_K_default_val, step=1.0, format="%.2f", key="bt_strike_poly_input")
-
-            # Set default Expiry for the input widget
-            hist_expiry_date_default_val = None
-            if expiry_default_from_live:
+            hist_expiry_default_str = st.session_state.get('selected_expiry_str')
+            hist_expiry_date_default_val = hist_end_date + timedelta(days=60) # Default fallback
+            if hist_expiry_default_str:
                 try:
-                    hist_expiry_date_default_val = datetime.strptime(expiry_default_from_live, '%Y-%m-%d').date()
-                    if hist_expiry_date_default_val <= hist_end_date: # Ensure expiry is after backtest end
-                       hist_expiry_date_default_val = hist_end_date + timedelta(days=60)
-                except ValueError: hist_expiry_date_default_val = hist_end_date + timedelta(days=60)
-            else: hist_expiry_date_default_val = hist_end_date + timedelta(days=60)
-            # Use a unique key for the date input
-            hist_expiry_date = st.date_input("Option Expiry Date", value=hist_expiry_date_default_val, min_value=hist_end_date + timedelta(days=1), key="bt_expiry_poly_input")
-            hist_expiry_str = hist_expiry_date.strftime('%Y-%m-%d') # Get string for API call
+                    temp_date = datetime.strptime(hist_expiry_default_str, '%Y-%m-%d').date()
+                    if temp_date > hist_end_date: hist_expiry_date_default_val = temp_date
+                except ValueError: pass # Ignore if format is wrong
+
+            hist_K = st.number_input("Option Strike (K)", value=hist_K_default, step=1.0, format="%.2f", key="bt_strike_poly_input") # Use unique key
+            hist_expiry_date = st.date_input("Option Expiry Date", value=hist_expiry_date_default_val, min_value=hist_end_date + timedelta(days=1), key="bt_expiry_poly_input") # Use unique key
+            hist_expiry_str = hist_expiry_date.strftime('%Y-%m-%d')
 
             st.markdown("---"); st.markdown("**Model Parameters for Backtest Period:**")
             hist_tau = st.slider("Hist. Tariff τ (Constant)", 0.0, 1.0, tau, 0.01, format="%.2f", key="bt_tau_poly_hist")
@@ -139,11 +122,17 @@ def render_tab_backtest(
                     st.write(f"Processing {num_days} trading days from {hist_start_date} to {hist_end_date}...")
                     bt_progress = st.progress(0)
                     days_with_option_data = 0
-                    api_calls_today = 0
+                    api_calls_counter = 0 # Track calls for rate limiting
                     hist_model_args_common = {'lambda_sensitivity': hist_lambda_sens, **hist_jump_params}
 
                     # --- Loop through each TRADING DAY ---
                     for idx, quote_date_dt in enumerate(trading_days):
+                        # Rate limit check before making calls for the day
+                        # Need 2 calls per day (call + put)
+                        if api_calls_counter > 0 and api_calls_counter % 4 == 0 : # Sleep every 2 days (4 calls) approx
+                             print(f"Pausing for rate limit... ({api_calls_counter} calls)") # Debug print
+                             time.sleep(12.5) # Wait slightly > 12 seconds
+
                         current_quote_date = quote_date_dt.date()
                         stock_row = hist_stock_data.loc[quote_date_dt]
                         hist_S = stock_row['Close']
@@ -156,24 +145,22 @@ def render_tab_backtest(
                         hist_r_day = hist_rates_data.get(quote_date_dt, r);
                         if pd.isna(hist_r_day): hist_r_day = r
 
-                        # --- Fetch Polygon EOD Option Data ---
+                        # Fetch Polygon EOD Data day by day
                         poly_call_ticker = generate_polygon_ticker(ticker_symbol, hist_expiry_date, hist_K, 'call')
                         call_eod_data = get_polygon_option_eod(poly_call_ticker, current_quote_date)
-                        api_calls_today += 1
+                        api_calls_counter += 1
 
-                        # Apply rate limit delay
-                        if api_calls_today % 4 == 0: # Apply delay roughly every 4 calls (2 pairs)
-                             time.sleep(12.5)
+                        # Small delay between the two calls for the same day
+                        time.sleep(0.3)
 
                         poly_put_ticker = generate_polygon_ticker(ticker_symbol, hist_expiry_date, hist_K, 'put')
                         put_eod_data = get_polygon_option_eod(poly_put_ticker, current_quote_date)
-                        api_calls_today += 1
+                        api_calls_counter += 1
 
                         market_call_close = call_eod_data.get('close', np.nan) if call_eod_data else np.nan
                         market_put_close = put_eod_data.get('close', np.nan) if put_eod_data else np.nan
                         iv_call, iv_put = np.nan, np.nan # No IV from Polygon EOD
-
-                        sigma_used = hist_sigma_fallback # Always use fallback sigma
+                        sigma_used = hist_sigma_fallback
 
                         if call_eod_data or put_eod_data: days_with_option_data += 1
 
@@ -188,19 +175,15 @@ def render_tab_backtest(
                         backtest_results.append({"Date": quote_date_dt, "StockPrice": hist_S, "TTM": hist_TTM, "Rate": hist_r_day, "SigmaUsed": sigma_used, "HistIVCall": iv_call, "HistIVPut": iv_put, "MarketCall": market_call_close, "MarketPut": market_put_close, "ModelCall_Tariff": mc_t, "ModelPut_Tariff": mp_t, "ModelCall_NoTariff": mc_nt, "ModelPut_NoTariff": mp_nt})
                         bt_progress.progress((idx + 1) / num_days)
 
-                        # Apply rate limit delay again before next loop iteration
-                        if api_calls_today % 4 == 0 and idx < num_days -1: # Avoid sleep after last day
-                             time.sleep(12.5)
-
-
+                    # --- End Loop ---
                     bt_progress.empty()
                     st.info(f"Processed {num_days} trading days. Found Polygon EOD options data for {days_with_option_data} days.")
 
                     # --- Process & Display Results ---
                     if not backtest_results: st.warning("No valid points generated during backtest loop.")
                     else:
+                        # ... (Result processing, plotting, error calculation - UNCHANGED, using 'MarketCall'/'MarketPut') ...
                         results_df = pd.DataFrame(backtest_results).set_index("Date"); st.session_state.backtest_results_df = results_df
-                        # Call Analysis
                         results_df_calls = results_df.dropna(subset=['MarketCall'])
                         if results_df_calls.empty: st.warning("No Polygon EOD call price data found in the period for comparison.")
                         else:
@@ -210,7 +193,6 @@ def render_tab_backtest(
                             if not errors_t.empty: mae_t=errors_t.abs().mean(); rmse_t=np.sqrt((errors_t**2).mean()); mae_nt=errors_nt.abs().mean(); rmse_nt=np.sqrt((errors_nt**2).mean()); st.subheader("Pricing Error Analysis (Calls: Model - Market)"); err_col1, err_col2 = st.columns(2); err_col1.metric(f"MAE (τ={hist_tau:.2f})", f"${mae_t:.4f}", f"RMSE: ${rmse_t:.4f}"); err_col2.metric("MAE (τ=0)", f"${mae_nt:.4f}", f"RMSE: ${rmse_nt:.4f}"); fig_err_call = go.Figure(); fig_err_call.add_trace(go.Scatter(x=errors_t.index, y=errors_t, name=f'Error (τ={hist_tau:.2f})', line=dict(color='red'))); fig_err_call.add_trace(go.Scatter(x=errors_nt.index, y=errors_nt, name='Error (τ=0)', line=dict(color='pink', dash='dash'))); fig_err_call.add_hline(y=0, line=dict(color='black', width=1)); fig_err_call.update_layout(title="Call Pricing Error Over Time", yaxis_title="Error ($)", yaxis_tickformat="$,.3f", legend=dict(orientation="h", yanchor="bottom", y=1.02), hovermode="x unified"); st.plotly_chart(fig_err_call, use_container_width=True)
                             else: st.warning("Could not calculate call errors.")
                             with st.expander("View Call Backtest Data"): cols=['StockPrice','TTM','Rate','SigmaUsed','MarketCall','ModelCall_Tariff','ModelCall_NoTariff','Error_Tariff','Error_NoTariff']; fmt={'StockPrice':'${:,.2f}','TTM':'{:.4f}','Rate':'{:.4%}','SigmaUsed':'{:.4%}','MarketCall':'${:,.3f}','ModelCall_Tariff':'${:,.3f}','ModelCall_NoTariff':'${:,.3f}','Error_Tariff':'{:+,.3f}','Error_NoTariff':'{:+,.3f}'}; st.dataframe(results_df_calls[cols].style.format(fmt, na_rep="N/A"))
-                        # Put Analysis
                         st.markdown("---")
                         results_df_puts = results_df.dropna(subset=['MarketPut'])
                         if results_df_puts.empty: st.warning("No Polygon EOD put price data found in the period for comparison.")
